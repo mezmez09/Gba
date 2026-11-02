@@ -1,6 +1,6 @@
 // Cache-first service worker: after one online visit the player and the
 // EmulatorJS files (loader, scripts, GBA core) work with no internet.
-const CACHE = 'gba-player-v1';
+const CACHE = 'gba-player-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
