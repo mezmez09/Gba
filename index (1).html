@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<title>GBA Player</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#eee;font-family:system-ui,sans-serif}
+  body{overflow:hidden;display:flex;align-items:center;justify-content:center;flex-direction:column}
+  #display{width:100%;height:100%}
+  #menu{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px;text-align:center;box-sizing:border-box;overflow:auto}
+  h1{margin:0 0 4px;font-size:26px}
+  p{margin:0;color:#aaa;max-width:34em;line-height:1.4}
+  button,label.btn,select{background:#2a6df4;color:#fff;border:0;border-radius:10px;padding:12px 22px;font-size:17px;cursor:pointer;display:inline-block}
+  label.btn.sec{background:#333}
+  select{background:#333;font-size:15px;padding:10px}
+  button.danger{background:#7a2323;font-size:14px;padding:8px 14px}
+  input[type=file]{display:none}
+  #status{min-height:1.4em;color:#8fd18f}
+  #status.err{color:#f08a8a}
+  #list{display:flex;flex-direction:column;gap:8px;width:100%;max-width:30em}
+  .row{display:flex;gap:8px;align-items:center}
+  .row .play{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{opacity:.7;font-size:13px;margin-left:8px}
+</style>
+</head>
+<body>
+<div id="menu">
+  <h1>Game Player</h1>
+  <p id="info">Add a game once (GBA, DS, N64, SNES, NES, Game Boy, Genesis). It is saved inside this browser, so next time you just tap it.</p>
+  <div id="list"></div>
+  <label class="btn sec" for="rom">+ Add a game file</label>
+  <input type="file" id="rom" accept=".gba,.nds,.z64,.n64,.v64,.gb,.gbc,.nes,.smc,.sfc,.md,.gen,.zip,.7z">
+  <p id="status"></p>
+</div>
+
+<script>
+// ---- Offline support ----
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+
+// ---- IndexedDB (same database as before, so old games stay) ----
+const DB='gba-player', STORE='roms';
+function openDb(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,1);r.onupgradeneeded=()=>r.result.createObjectStore(STORE);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function dbAll(){const d=await openDb();return new Promise((res,rej)=>{const out=[];const q=d.transaction(STORE).objectStore(STORE).openCursor();q.onsuccess=()=>{const c=q.result;if(c){out.push({key:c.key,val:c.value});c.continue();}else res(out);};q.onerror=()=>rej(q.error);});}
+async function dbSet(k,v){const d=await openDb();return new Promise((res,rej)=>{const t=d.transaction(STORE,'readwrite');t.objectStore(STORE).put(v,k);t.oncomplete=()=>res();t.onerror=()=>rej(t.error);});}
+async function dbDel(k){const d=await openDb();return new Promise((res,rej)=>{const t=d.transaction(STORE,'readwrite');t.objectStore(STORE).delete(k);t.oncomplete=()=>res();t.onerror=()=>rej(t.error);});}
+
+const $ = id => document.getElementById(id);
+const status = (t,err)=>{$('status').textContent=t;$('status').className=err?'err':'';};
+
+const SYSTEMS = {gba:'Game Boy Advance', nds:'Nintendo DS', n64:'Nintendo 64', gb:'Game Boy / Color', nes:'NES', snes:'SNES', segaMD:'Sega Genesis'};
+const EXT = {gba:'gba', nds:'nds', z64:'n64', n64:'n64', v64:'n64', gb:'gb', gbc:'gb', nes:'nes', smc:'snes', sfc:'snes', md:'segaMD', gen:'segaMD'};
+const extOf = n => (n.split('.').pop()||'').toLowerCase();
+const coreFor = rec => rec.core || EXT[extOf(rec.name)] || 'gba';   // old saved games = GBA
+
+async function refresh(){
+  let items=[]; try{ items = await dbAll(); }catch(e){}
+  const list=$('list'); list.innerHTML='';
+  for(const it of items){
+    const rec=it.val; if(!rec||!rec.blob) continue;
+    const row=document.createElement('div'); row.className='row';
+    const b=document.createElement('button'); b.className='play';
+    b.textContent='▶ '+rec.name.replace(/\.[^.]+$/,'');
+    const tag=document.createElement('span'); tag.className='tag'; tag.textContent=SYSTEMS[coreFor(rec)]||coreFor(rec);
+    b.appendChild(tag);
+    b.onclick=()=>play(rec);
+    const d=document.createElement('button'); d.className='danger'; d.textContent='✕';
+    d.title='Remove'; d.onclick=async()=>{ if(confirm('Remove this game from the list? (Your saves are kept)')){ await dbDel(it.key); refresh(); } };
+    row.appendChild(b); row.appendChild(d); list.appendChild(row);
+  }
+}
+
+$('rom').addEventListener('change', async e=>{
+  const f=e.target.files[0]; e.target.value=''; if(!f) return;
+  let core = EXT[extOf(f.name)];
+  if(!core){ // zip / 7z: ask which system
+    const sel=document.createElement('select');
+    for(const k in SYSTEMS){const o=document.createElement('option');o.value=k;o.textContent=SYSTEMS[k];sel.appendChild(o);}
+    const ok=document.createElement('button'); ok.textContent='Save';
+    const box=$('status'); box.textContent='Which system is this game for? '; box.appendChild(sel); box.appendChild(ok);
+    await new Promise(r=>ok.onclick=r); core=sel.value;
+  }
+  status('Saving…');
+  const rec={name:f.name,type:f.type,blob:f,core};
+  try{ await dbSet('rom:'+f.name, rec); status('Saved! Tap it in the list.'); }
+  catch(err){ status('Could not store it offline (you can still play now).',true); play(rec); return; }
+  refresh();
+});
+
+function play(rec){
+  const file=new File([rec.blob], rec.name, {type:rec.type||'application/octet-stream'});
+  const display=document.createElement('div'), sub=document.createElement('div');
+  display.id='display'; sub.id='game'; display.appendChild(sub);
+  $('menu').style.display='none';
+  document.body.appendChild(display);
+
+  window.EJS_player      = '#game';
+  window.EJS_core        = coreFor(rec);
+  window.EJS_gameUrl     = file;
+  window.EJS_gameName    = rec.name.replace(/\.[^.]+$/,'');   // unchanged, so old saves still match
+  window.EJS_pathtodata  = 'https://cdn.emulatorjs.org/stable/data/';
+  window.EJS_startOnLoaded = true;
+  window.EJS_threads     = false;
+  window.EJS_askBeforeExit = false;
+  window.EJS_cacheConfig = {enabled:true, cacheMaxSizeMB:4096, cacheMaxAgeMins:525600};
+
+  const s=document.createElement('script');
+  s.src=window.EJS_pathtodata+'loader.js';
+  s.onerror=()=>{ display.remove(); $('menu').style.display='flex';
+    status('Could not load the emulator. Connect to the internet and open this page once, then it works offline.',true); };
+  document.body.appendChild(s);
+}
+
+refresh();
+</script>
+</body>
+</html>
